@@ -1,6 +1,18 @@
-# directors-book
+<p align="center">
+  <img src="assets/banner.png" alt="directors-book: an agent skill for Seedance video generation" width="100%">
+</p>
 
-[中文](README.md)
+<p align="center">
+  <img src="https://img.shields.io/badge/version-5.0.0-2563eb" alt="version 5.0.0">
+  <img src="https://img.shields.io/badge/stages-screenplay%20%7C%20storyboard%20%7C%20assets%20%7C%20video%20prompts-7c3aed" alt="four stages, each usable alone">
+  <img src="https://img.shields.io/badge/output-HTML%20director%27s%20book-ef4444" alt="output: HTML director's book">
+  <img src="https://img.shields.io/badge/model-Seedance%202.0%20%7C%202.5-0d9488" alt="model: Seedance 2.0 and 2.5">
+  <img src="https://img.shields.io/badge/genre-short%20drama%20%7C%20film-f59e0b" alt="genre: short drama, film">
+  <img src="https://img.shields.io/badge/tested%20on-Claude%20Code%20%7C%20Codex%20%7C%20WorkBuddy-16a34a" alt="tested on Claude Code, Codex, WorkBuddy">
+  <img src="https://img.shields.io/badge/license-MIT-eab308" alt="MIT License">
+</p>
+
+<p align="center"><a href="README.md">简体中文</a> · <b>English</b></p>
 
 > **Version 5.0.0.** The version number continues the earlier directors-book line (the old 2.0.1, no longer maintained): same name and a similar structure, but the content was rewritten and is not compatible with the old version. All the skill files are written, and it has been tried in Claude Code, Codex, and WorkBuddy (short drama and film; a few runs were contaminated, see `tests/`). Most of the writing rules have not been compared in controlled experiments; see Known limitations below.
 

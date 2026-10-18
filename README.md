@@ -1,6 +1,18 @@
-# directors-book（导演手册）
+<p align="center">
+  <img src="assets/banner.png" alt="directors-book 导演手册：面向 Seedance 视频生成的 agent skill" width="100%">
+</p>
 
-[English](README.en.md)
+<p align="center">
+  <img src="https://img.shields.io/badge/%E7%89%88%E6%9C%AC-5.0.0-2563eb" alt="版本 5.0.0">
+  <img src="https://img.shields.io/badge/%E9%98%B6%E6%AE%B5-%E5%89%A7%E6%9C%AC%20%7C%20%E5%88%86%E9%95%9C%20%7C%20%E8%B5%84%E4%BA%A7%E5%8C%85%20%7C%20%E8%A7%86%E9%A2%91%E6%8F%90%E7%A4%BA%E8%AF%8D-7c3aed" alt="四个阶段，各自可单独使用">
+  <img src="https://img.shields.io/badge/%E8%BE%93%E5%87%BA-HTML%20%E5%AF%BC%E6%BC%94%E6%89%8B%E5%86%8C-ef4444" alt="输出 HTML 导演手册">
+  <img src="https://img.shields.io/badge/%E6%A8%A1%E5%9E%8B-Seedance%202.0%20%7C%202.5-0d9488" alt="模型 Seedance 2.0 和 2.5">
+  <img src="https://img.shields.io/badge/%E4%BD%93%E8%A3%81-%E7%9F%AD%E5%89%A7%20%7C%20%E5%BD%B1%E8%A7%86-f59e0b" alt="体裁 短剧、影视">
+  <img src="https://img.shields.io/badge/%E5%B7%B2%E6%B5%8B%E5%B9%B3%E5%8F%B0-Claude%20Code%20%7C%20Codex%20%7C%20WorkBuddy-16a34a" alt="已测平台 Claude Code、Codex、WorkBuddy">
+  <img src="https://img.shields.io/badge/License-MIT-eab308" alt="MIT License">
+</p>
+
+<p align="center"><b>简体中文</b> · <a href="README.en.md">English</a></p>
 
 > **版本 5.0.0。** 这个版本号接着之前做过的 directors-book（旧版 2.0.1，已不再维护）：名称和结构相近，但内容是重新写的，不兼容旧版。skill 的文件都已写完，已在 Claude Code、Codex、WorkBuddy 里测过（短剧、影视；有几次测试被污染过，见 `tests/`）；提示词写法的多数规则没有做过对照实验，见下面的「已知限制」。
 
