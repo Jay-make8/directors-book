@@ -21,7 +21,19 @@ Before starting, it asks for the **genre** (short drama or film, even if you bri
 
 ## Installation
 
-This skill follows the [Agent Skills open standard](https://agentskills.io/specification) and works with both Claude Code and Codex. Copy the `skills/directors-book` folder to:
+This skill follows the [Agent Skills open standard](https://agentskills.io/specification) and works with both Claude Code and Codex.
+
+**Option 1: install with a command**
+
+```bash
+npx skills add Jay-make8/directors-book
+```
+
+This command comes from the third-party [skills](https://github.com/vercel-labs/skills) tool. It finds `directors-book` in this repository and installs it into the agents you choose; add `-g` to install at user level, and `-a` to pick agents. We verified that it discovers this skill in the repository; actual installation was not checked in every agent.
+
+**Option 2: copy it manually**
+
+Download the zip from the [Releases](https://github.com/Jay-make8/directors-book/releases) page (or clone this repository) and copy the `directors-book` folder to:
 
 | agent | user level (all projects) | project level |
 |---|---|---|

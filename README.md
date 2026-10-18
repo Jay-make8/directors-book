@@ -21,7 +21,19 @@
 
 ## 安装
 
-这个 skill 遵循 [Agent Skills 开放标准](https://agentskills.io/specification)，Claude Code 和 Codex 都可以使用。把 `skills/directors-book` 这个目录复制到对应位置：
+这个 skill 遵循 [Agent Skills 开放标准](https://agentskills.io/specification)，Claude Code 和 Codex 都可以使用。
+
+**方式一：命令安装**
+
+```bash
+npx skills add Jay-make8/directors-book
+```
+
+这条命令由第三方工具 [skills](https://github.com/vercel-labs/skills) 提供，会去本仓库里找到 `directors-book`，再装到你选的 agent 里；加 `-g` 装到用户级目录，用 `-a` 指定 agent。我们验证过它能在本仓库里发现这个 skill，各 agent 里的实际安装没有逐个验证。
+
+**方式二：手动复制**
+
+下载 [Release](https://github.com/Jay-make8/directors-book/releases) 里的压缩包（或克隆本仓库），把 `directors-book` 这个目录复制到对应位置：
 
 | agent | 用户级（所有项目） | 项目级 |
 |---|---|---|
