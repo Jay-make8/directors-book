@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="assets/banner.png" alt="directors-book 导演手册：面向 Seedance 视频生成的 agent skill" width="100%">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.png">
+    <img src="assets/banner-light.png" alt="directors-book 导演手册：面向 Seedance 视频生成的 agent skill" width="100%">
+  </picture>
 </p>
 
 <p align="center">

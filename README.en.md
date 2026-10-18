@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="assets/banner.png" alt="directors-book: an agent skill for Seedance video generation" width="100%">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.png">
+    <img src="assets/banner-light.png" alt="directors-book: an agent skill for Seedance video generation" width="100%">
+  </picture>
 </p>
 
 <p align="center">
