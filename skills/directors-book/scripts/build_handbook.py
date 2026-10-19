@@ -38,8 +38,38 @@ SCENE_ROLE = {"母版": "主图", "场景多机位": "多机位", "四视图": "
 FACE_WORDS = re.compile(r"[眼眉嘴唇喉颌脸额鼻泪颊腮牙瞳睫眶]|下巴")
 WIDE_SIZES = ("大远景", "远景", "全景")
 
-# 视频提示词全篇用中文全角标点
+# 视频提示词全篇用中文全角标点（音效的半角 <> 是官方写法，不算）
 HALF_WIDTH = re.compile(r'[,;:?!()"]')
+
+# 台词：中文引号（也兼容半角引号）里的内容
+QUOTE_RE = re.compile(r"[“\"](.*?)[”\"]")
+
+
+def quote_chars(s):
+    """只留汉字、字母、数字，用来比较台词和数字数。"""
+    return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", s)
+
+
+def restated_quote(body):
+    """台词说完后又复述台词里的字（例如：说：“太像了。”说到“像”字时声音发颤），返回被复述的那段；没有就返回 None。
+
+    官方提示：台词后面复述再追加语气、表情、动作描述，容易让模型生成字幕。
+    """
+    ms = list(QUOTE_RE.finditer(body))
+    clean = [quote_chars(m.group(1)) for m in ms]
+    for k in range(1, len(ms)):
+        prev, cur = clean[k - 1], clean[k]
+        if not cur or len(cur) >= len(prev) or cur not in prev:
+            continue
+        gap = body[ms[k - 1].end():ms[k].start()]
+        after = body[ms[k].end():ms[k].end() + 2]
+        if len(gap) <= 12 and (re.search(r"说到|念到|讲到|这句|这几个字", gap) or re.match(r"[字时]", after)):
+            return ms[k].group(1)
+    outside = QUOTE_RE.sub("", body)
+    for k, c in enumerate(clean):
+        if len(c) >= 3 and c in quote_chars(outside):
+            return ms[k].group(1)
+    return None
 
 # 资产阶段的内部术语：视频模型看不懂，不能出现在视频提示词里
 INTERNAL_TERMS = ("主机位", "母版", "场景多机位", "四视图", "走位图")
@@ -208,7 +238,9 @@ def validate(data, max_seconds, max_images, rep):
             continue
         need_text(seg, "title", p, rep)
         need_text(seg, "concept", p, rep)
-        need_text(seg, "sound", p, rep)
+        snd = need_text(seg, "sound", p, rep)
+        if snd is not None and "<" not in snd:
+            rep.warn(p + ".sound", "【声音】里的音效没有用半角尖括号 <> 括起来（官方符号：音效用 <>，音乐用（）；见 video-prompt.md 的【声音】）")
         neg = need_text(seg, "negative", p, rep)
         for key, name in BLOCK_FIELDS:
             v = seg.get(key)
@@ -317,11 +349,17 @@ def validate(data, max_seconds, max_images, rep):
                     and "（" not in body_txt):
                 rep.warn(sp + ".body",
                          "镜头%d 有台词，但没有按「角色（语气）……说：“台词”」写出语气（括号里不超过 3 个词，不能省）" % no)
+            if body_txt is not None:
+                again = restated_quote(body_txt)
+                if again is not None:
+                    rep.warn(sp + ".body",
+                             "镜头%d 在台词说完后又复述了台词里的字「%s」：语气、表情、动作放到台词前面写"
+                             "（官方提示：台词后复述再追加描述，容易让模型生成字幕；见 video-prompt.md 的台词规则）" % (no, again))
             if is_text(lines_txt) and body_txt is not None:
                 claimed = [int(n) for n in re.findall(r"(\d+)\s*字", lines_txt)]
-                quotes = re.findall(r"[“\"](.*?)[”\"]", body_txt)
+                quotes = QUOTE_RE.findall(body_txt)
                 if claimed and quotes:
-                    actual = sum(len(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", q)) for q in quotes)
+                    actual = sum(len(quote_chars(q)) for q in quotes)
                     if abs(sum(claimed) - actual) > 1:
                         rep.warn(sp + ".lines", "镜头%d 的台词列写了 %d 字，正文里的台词实际是 %d 字（字数不含标点）"
                                  % (no, sum(claimed), actual))
@@ -332,6 +370,8 @@ def validate(data, max_seconds, max_images, rep):
                 rep.warn(sp + ".title", "镜头号应全片连续：这里应是镜头%d，现在是镜头%d" % (next_shot_no, no))
             next_shot_no = no + 1
             start, end = float(m.group(3)), float(m.group(4))
+            if "." in m.group(3) + m.group(4):
+                rep.warn(sp + ".title", "时间段请用整数秒（Seedance 2.5 只认整数秒的时间戳；见 models.md）")
             if prev_end is not None and abs(start - prev_end) > 1e-6:
                 rep.warn(sp + ".title", "起始秒数 %g 和上一个镜头的结束 %g 不连续" % (start, prev_end))
             if end <= start:
