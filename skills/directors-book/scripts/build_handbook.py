@@ -41,6 +41,13 @@ WIDE_SIZES = ("大远景", "远景", "全景")
 # 视频提示词全篇用中文全角标点（音效的半角 <> 是官方写法，不算）
 HALF_WIDTH = re.compile(r'[,;:?!()"]')
 
+# 含糊的方向：「朝右后方」这类，模型不知道是谁的方向
+VAGUE_DIRECTION = re.compile(r"[朝向往](?:左后方|右后方|左前方|右前方)")
+
+# 近景、特写里必须写清人物在画面哪一侧（或画面里没有人），否则切镜头后左右容易乱
+CLOSE_SIZES = ("近景", "特写", "大特写")
+CLOSE_POSITION = re.compile(r"画面(?:的)?[左右]|画面外|画面里没有人|画面中没有人")
+
 # 台词：中文引号（也兼容半角引号）里的内容
 QUOTE_RE = re.compile(r"[“\"](.*?)[”\"]")
 
@@ -209,9 +216,17 @@ def validate(data, max_seconds, max_images, rep):
                         rep.error(pp, "必须是 {\"label\":…, \"text\":…}")
                         continue
                     lab = need_text(pr, "label", pp, rep)
-                    need_text(pr, "text", pp, rep)
+                    txt = need_text(pr, "text", pp, rep)
                     if lab is not None:
                         labels.append(lab)
+                    if lab in CHARACTER_SHEET_LABELS and txt is not None and not ("横向排列" in txt and "从左到右" in txt):
+                        rep.warn(pp + ".text", "人物四视图的【版式】第一句要写固定的排列句：四格横向排列，从左到右依次为正面全身、"
+                                 "90°侧面全身、背面全身、面部近景（见 asset-character.md）")
+                    if SCENE_ROLE.get(lab) == "多机位" and txt is not None:
+                        miss = [w for w in ("左上", "右上", "左下", "右下", "V1", "V2", "V3", "V4") if w not in txt]
+                        if miss:
+                            rep.warn(pp + ".text", "场景多机位要写明格子位置和统一标注：V1 左上、V2 右上、V3 左下、V4 右下"
+                                     "（缺「%s」；见 asset-scene.md 的【标注】）" % "、".join(miss))
                     if "tag" in pr:
                         rep.warn(pp + ".tag", "tag 已不再使用：@图N 由脚本按每个段落的上传顺序生成；已忽略")
             if aid is not None:
@@ -350,6 +365,14 @@ def validate(data, max_seconds, max_images, rep):
                 rep.warn(sp + ".body",
                          "镜头%d 有台词，但没有按「角色（语气）……说：“台词”」写出语气（括号里不超过 3 个词，不能省）" % no)
             if body_txt is not None:
+                vague = VAGUE_DIRECTION.search(body_txt)
+                if vague:
+                    rep.warn(sp + ".body", "镜头%d 写了「%s」这类方向：模型不知道是谁的方向，常常直接理解成画面左右。"
+                             "改成画面里的方向（画面左侧、画面右侧、靠近或远离镜头、画面上方）（见 video-prompt.md「写法细节」）"
+                             % (no, vague.group(0)))
+                if m.group(5).strip() in CLOSE_SIZES and not CLOSE_POSITION.search(body_txt):
+                    rep.warn(sp + ".body", "镜头%d 是%s，但没有写人物在画面哪一侧、脸朝哪边（物品特写也要写人在哪里，或「画面里没有人」），"
+                             "切镜头后人物和物品的左右关系容易乱（见 video-prompt.md 第 2 项）" % (no, m.group(5).strip()))
                 again = restated_quote(body_txt)
                 if again is not None:
                     rep.warn(sp + ".body",
@@ -417,35 +440,39 @@ def seg_upload(seg, assets):
     return [(i + 1, a, p) for i, (a, p) in enumerate(people + others)]
 
 
+def ref_line(n, a, p, n_scenes):
+    """【参考素材绑定】里的一行：这张图是什么、参考什么、不参考什么。
+
+    官方提示词指南要求写清每个素材的编号和用途；只参考一部分时，写明参考哪一部分。
+    """
+    kind, label, name = a["kind"], p["label"], a["name"]
+    if kind == "人物":
+        if label in CHARACTER_SHEET_LABELS:
+            return ("@图%d 是%s的外貌参考：四格是同一个人的不同角度，只参考长相、发型和服装，"
+                    "画面里只出现一个%s。" % (n, name, name))
+        return "@图%d 是%s（%s）的外貌参考：只参考长相、发型和服装。" % (n, name, label)
+    if kind == "场景":
+        where = name if n_scenes > 1 else "这个场景"
+        role = SCENE_ROLE.get(label, label)
+        if role == "主图":
+            return "@图%d 是%s的主图：参考空间布局、材质和光线。" % (n, where)
+        if role == "多机位":
+            return ("@图%d 是%s的四个角度（V1–V4）：只用来理解空间结构，不是分镜，不要按格子顺序生成镜头；"
+                    "图上的 V1–V4 标注不要出现在画面里。" % (n, where))
+        if role == "人物走位":
+            return ("@图%d 是%s的俯视走位示意图：只参考人物的站位和路线；"
+                    "图上的线条、箭头和字母不要出现在画面里。" % (n, where))
+        return "@图%d 是%s的%s：参考空间布局。" % (n, where, label)
+    if kind == "参考帧":
+        return "@图%d 为首帧：本段从这一帧开始（上一段视频的最后一帧）。" % n
+    return "@图%d 是%s（%s）的参考图。" % (n, name, label)
+
+
 def seg_refs(seg, assets):
-    """【参考素材绑定】的各行：角色一行，场景一行（主图、多机位、人物走位），其他类型各一行。"""
+    """【参考素材绑定】的各行：按本段的上传顺序，每张图一行，写清它是什么、参考什么。"""
     upload = seg_upload(seg, assets)
-    lines = []
-    chars = [(n, a, p) for n, a, p in upload if a["kind"] == "人物"]
-    if chars:
-        lines.append("角色：" + "，".join(
-            "%s%s@图%d" % (a["name"], "" if p["label"] in CHARACTER_SHEET_LABELS else "（%s）" % p["label"], n)
-            for n, a, p in chars))
-    kinds = []
-    for n, a, p in upload:
-        if a["kind"] != "人物" and a["kind"] not in kinds:
-            kinds.append(a["kind"])
-    for kind in kinds:
-        group = [(n, a, p) for n, a, p in upload if a["kind"] == kind]
-        owners = []
-        for n, a, p in group:
-            if a not in owners:
-                owners.append(a)
-        parts = []
-        for a in owners:
-            if kind == "场景":
-                txt = "，".join("%s@图%d" % (SCENE_ROLE.get(p["label"], p["label"]), n)
-                               for n, a2, p in group if a2 is a)
-                parts.append(txt if len(owners) == 1 else "%s %s" % (a["name"], txt))
-            else:
-                parts.append("，".join("%s（%s）@图%d" % (a["name"], p["label"], n)
-                                      for n, a2, p in group if a2 is a))
-        lines.append("%s：%s" % (kind, "；".join(parts)))
+    n_scenes = len({a["id"] for n, a, p in upload if a["kind"] == "场景"})
+    lines = [ref_line(n, a, p, n_scenes) for n, a, p in upload]
     lines.extend(r.strip() for r in seg.get("refs_extra", []))
     return lines
 
