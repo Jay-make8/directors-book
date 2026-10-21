@@ -3,7 +3,7 @@ name: directors-book
 description: 导演手册（directors-book）：为 Seedance 视频生成写剧本、分镜、人物与场景资产提示词、视频提示词，并可把四个阶段整合成一个可一键复制的 HTML 导演手册。四个阶段可单选。当用户要写短剧或影视剧本、拆分镜、给人物或场景写出图提示词、写 Seedance 视频提示词、或要生成导演手册时使用。关键词：剧本、分镜、镜头、人物设定、场景图、人物四视图、场景多机位、视频提示词、Seedance 2.0、Seedance 2.5、导演手册。
 license: MIT
 metadata:
-  version: "5.2.0"
+  version: "5.2.1"
   author: "Jay"
 ---
 
