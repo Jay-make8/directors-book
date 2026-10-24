@@ -44,9 +44,9 @@ HALF_WIDTH = re.compile(r'[,;:?!()"]')
 # 含糊的方向：「朝右后方」这类，模型不知道是谁的方向
 VAGUE_DIRECTION = re.compile(r"[朝向往](?:左后方|右后方|左前方|右前方)")
 
-# 近景、特写里必须写清人物在画面哪一侧（或画面里没有人），否则切镜头后左右容易乱
+# 近景、特写里必须写清人物在画面哪一侧、看向哪一侧（物品特写写「画面里只有……」），否则切镜头后左右容易乱
 CLOSE_SIZES = ("近景", "特写", "大特写")
-CLOSE_POSITION = re.compile(r"画面(?:的)?[左右]|画面外|画面里没有人|画面中没有人")
+CLOSE_POSITION = re.compile(r"画面(?:的)?[左右]|画面里只有|画面中只有|画面里没有人|画面中没有人")
 
 # 台词：中文引号（也兼容半角引号）里的内容
 QUOTE_RE = re.compile(r"[“\"](.*?)[”\"]")
@@ -371,8 +371,8 @@ def validate(data, max_seconds, max_images, rep):
                              "改成画面里的方向（画面左侧、画面右侧、靠近或远离镜头、画面上方）（见 video-prompt.md「写法细节」）"
                              % (no, vague.group(0)))
                 if m.group(5).strip() in CLOSE_SIZES and not CLOSE_POSITION.search(body_txt):
-                    rep.warn(sp + ".body", "镜头%d 是%s，但没有写人物在画面哪一侧、脸朝哪边（物品特写也要写人在哪里，或「画面里没有人」），"
-                             "切镜头后人物和物品的左右关系容易乱（见 video-prompt.md 第 2 项）" % (no, m.group(5).strip()))
+                    rep.warn(sp + ".body", "镜头%d 是%s，但没有写人物偏画面哪一侧、视线看向哪一侧（例如「看向画面左侧外」）；物品特写写「画面里只有……」或「一只手从画面左侧伸进来」。"
+                             "切镜头后人物和物品的左右关系容易乱（见 video-prompt.md「在场的人不凭空消失」）" % (no, m.group(5).strip()))
                 again = restated_quote(body_txt)
                 if again is not None:
                     rep.warn(sp + ".body",
