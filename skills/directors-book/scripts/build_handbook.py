@@ -48,6 +48,9 @@ VAGUE_DIRECTION = re.compile(r"[朝向往](?:左后方|右后方|左前方|右�
 
 # 拿摄影机给摄影机定位的说法：模型读不出位置，防跳轴要写谁在画面左右
 ABSTRACT_CAMERA = re.compile(r"轴线|靠近(?:镜头|观众)的?一侧|(?:镜头|观众|摄影机)这一?侧|两人走来的")
+# 影视体裁每个镜头另起的光线段；【摄影与影调】里不写画面左右（机位一换就变）
+LIGHT_LEAD = "光线："
+SCREEN_SIDE = re.compile(r"画面(?:的)?[左右]")
 ABSTRACT_CAMERA_HINT = ("机位要写在哪个参照物旁（场景里的固定实物，或位置已写清的人）、朝哪个参照物看，防跳轴就写清谁在画面左、谁在画面右"
                         "（见 video-prompt.md「写法细节」）")
 
@@ -283,6 +286,11 @@ def validate(data, max_seconds, max_images, rep):
             ab = ABSTRACT_CAMERA.search(v) if is_text(v) else None
             if ab:
                 rep.warn("%s.%s" % (p, key), "【%s】里写了「%s」：%s" % (label, ab.group(0), ABSTRACT_CAMERA_HINT))
+        cine = seg.get("cinematography")
+        if is_text(cine) and SCREEN_SIDE.search(cine):
+            rep.warn(p + ".cinematography",
+                     "【摄影与影调】里写了画面左右：机位一换，同一个光源就可能换到画面另一侧。这里把光源绑在场景实物上"
+                     "（「柜台左端的台灯」），画面方向写在每个镜头的「光线：」段里（见 video-prompt.md【摄影与影调】）")
         if neg is not None and NEGATIVE_LEAD not in neg:
             rep.warn(p + ".negative", "没有以「以下内容一律不要出现」开头")
         if "cinematography" in seg and not is_text(seg["cinematography"]):
@@ -349,7 +357,7 @@ def validate(data, max_seconds, max_images, rep):
             if hit:
                 rep.warn(sp + ".body", "正文里出现了资产阶段的内部术语「%s」，视频模型看不懂：换成画面里的方向和位置（见 video-prompt.md「写法细节」）" % "、".join(hit))
             if body_txt is not None:
-                body_chars += len(re.sub(r"\s+", "", body_txt))
+                body_chars += len(re.sub(r"\s+", "", body_txt.split(LIGHT_LEAD)[0]))
             need_text(sh, "camera", sp, rep)
             need_text(sh, "summary", sp, rep)
             lines_txt = need_text(sh, "lines", sp, rep)
@@ -366,7 +374,7 @@ def validate(data, max_seconds, max_images, rep):
                 continue
             no = int(m.group(1))
             if (body_txt is not None and m.group(5).strip() not in WIDE_SIZES
-                    and not FACE_WORDS.search(body_txt)):
+                    and not FACE_WORDS.search(body_txt.split(LIGHT_LEAD)[0])):
                 rep.warn(sp + ".body",
                          "镜头%d 的正文没有写到脸部的可见变化（眼、眉、嘴、喉、下巴……）；只写「平静」「克制」之类的词不算。"
                          "镜头里没有人脸时可以忽略（见 video-prompt.md 第 3 项）" % no)
@@ -383,7 +391,10 @@ def validate(data, max_seconds, max_images, rep):
                 ab = ABSTRACT_CAMERA.search(body_txt)
                 if ab:
                     rep.warn(sp + ".body", "镜头%d 写了「%s」：%s" % (no, ab.group(0), ABSTRACT_CAMERA_HINT))
-                if m.group(5).strip() in CLOSE_SIZES and not CLOSE_POSITION.search(body_txt):
+                if genre == "影视" and LIGHT_LEAD not in body_txt:
+                    rep.warn(sp + ".body", "镜头%d 没有「光线：」段：影视体裁每个镜头另起一段，写光落在脸和手的哪一边、背景多亮；"
+                             "有明确光源时按这一镜的机位写光从画面哪一侧来，阴天这类漫射光写上方柔光和哪边被遮挡稍暗（见 video-prompt.md【分镜】）" % no)
+                if m.group(5).strip() in CLOSE_SIZES and not CLOSE_POSITION.search(body_txt.split(LIGHT_LEAD)[0]):
                     rep.warn(sp + ".body", "镜头%d 是%s，但没有写人物偏画面哪一侧、视线看向哪一侧（例如「看向画面左侧外」）；物品特写写「画面里只有……」或「一只手从画面左侧伸进来」。"
                              "切镜头后人物和物品的左右关系容易乱（见 video-prompt.md「在场的人不凭空消失」）" % (no, m.group(5).strip()))
                 again = restated_quote(body_txt)
