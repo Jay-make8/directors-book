@@ -30,6 +30,8 @@ DEFAULT_MAX_IMAGES = {"2.5": 30, "2.0": 9}
 
 # 人物图的名称：这两个叫法在【参考素材绑定】里都只写人物名，不加括号
 CHARACTER_SHEET_LABELS = ("人物四视图", "四格图")
+# 参考帧（上一段最后一帧）的 label 写这个时只当状态参考，不当首帧：接缝是切换景别或机位时用
+STATE_FRAME_LABELS = ("状态参考",)
 
 # 场景图在【参考素材绑定】里的叫法（「四视图」是旧名，当作「场景多机位」处理）
 SCENE_ROLE = {"母版": "主图", "场景多机位": "多机位", "四视图": "多机位", "走位图": "人物走位"}
@@ -43,6 +45,11 @@ HALF_WIDTH = re.compile(r'[,;:?!()"]')
 
 # 含糊的方向：「朝右后方」这类，模型不知道是谁的方向
 VAGUE_DIRECTION = re.compile(r"[朝向往](?:左后方|右后方|左前方|右前方)")
+
+# 拿摄影机给摄影机定位的说法：模型读不出位置，防跳轴要写谁在画面左右
+ABSTRACT_CAMERA = re.compile(r"轴线|靠近(?:镜头|观众)的?一侧|(?:镜头|观众|摄影机)这一?侧|两人走来的")
+ABSTRACT_CAMERA_HINT = ("机位要写在哪个参照物旁（场景里的固定实物，或位置已写清的人）、朝哪个参照物看，防跳轴就写清谁在画面左、谁在画面右"
+                        "（见 video-prompt.md「写法细节」）")
 
 # 近景、特写里必须写清人物在画面哪一侧、看向哪一侧（物品特写写「画面里只有……」），否则切镜头后左右容易乱
 CLOSE_SIZES = ("近景", "特写", "大特写")
@@ -273,6 +280,9 @@ def validate(data, max_seconds, max_images, rep):
             hw = sorted(set(HALF_WIDTH.findall(v))) if is_text(v) else []
             if hw:
                 rep.warn("%s.%s" % (p, key), "【%s】里有半角标点「%s」，请改成全角（，；：？！（）“”）" % (label, "".join(hw)))
+            ab = ABSTRACT_CAMERA.search(v) if is_text(v) else None
+            if ab:
+                rep.warn("%s.%s" % (p, key), "【%s】里写了「%s」：%s" % (label, ab.group(0), ABSTRACT_CAMERA_HINT))
         if neg is not None and NEGATIVE_LEAD not in neg:
             rep.warn(p + ".negative", "没有以「以下内容一律不要出现」开头")
         if "cinematography" in seg and not is_text(seg["cinematography"]):
@@ -370,6 +380,9 @@ def validate(data, max_seconds, max_images, rep):
                     rep.warn(sp + ".body", "镜头%d 写了「%s」这类方向：模型不知道是谁的方向，常常直接理解成画面左右。"
                              "改成画面里的方向（画面左侧、画面右侧、靠近或远离镜头、画面上方）（见 video-prompt.md「写法细节」）"
                              % (no, vague.group(0)))
+                ab = ABSTRACT_CAMERA.search(body_txt)
+                if ab:
+                    rep.warn(sp + ".body", "镜头%d 写了「%s」：%s" % (no, ab.group(0), ABSTRACT_CAMERA_HINT))
                 if m.group(5).strip() in CLOSE_SIZES and not CLOSE_POSITION.search(body_txt):
                     rep.warn(sp + ".body", "镜头%d 是%s，但没有写人物偏画面哪一侧、视线看向哪一侧（例如「看向画面左侧外」）；物品特写写「画面里只有……」或「一只手从画面左侧伸进来」。"
                              "切镜头后人物和物品的左右关系容易乱（见 video-prompt.md「在场的人不凭空消失」）" % (no, m.group(5).strip()))
@@ -464,6 +477,10 @@ def ref_line(n, a, p, n_scenes):
                     "图上的线条、箭头和字母不要出现在画面里。" % (n, where))
         return "@图%d 是%s的%s：参考空间布局。" % (n, where, label)
     if kind == "参考帧":
+        if label in STATE_FRAME_LABELS:
+            # 只写文字带不过去的外观；左右、朝向、手的动作写在镜头正文里（机位可能已经换到人物连线的另一边）
+            return ("@图%d 是上一段视频的最后一帧：只参考人物的服装、发型和身上的状态（湿润、泪痕、污渍）；"
+                    "它不是首帧，不照搬它的构图，人物在画面哪一侧以本段文字为准。" % n)
         return "@图%d 为首帧：本段从这一帧开始（上一段视频的最后一帧）。" % n
     return "@图%d 是%s（%s）的参考图。" % (n, name, label)
 
