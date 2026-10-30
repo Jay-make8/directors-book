@@ -35,9 +35,12 @@ STATE_FRAME_LABELS = ("状态参考",)
 
 # 场景图在【参考素材绑定】里的叫法（「四视图」是旧名，当作「场景多机位」处理）
 SCENE_ROLE = {"母版": "主图", "场景多机位": "多机位", "四视图": "多机位", "走位图": "人物走位", "俯视平面图": "平面图"}
-# 默认不上传给视频模型的图：俯视平面图只用来生成场景多机位、走位图和写分镜（线条和标注可能漏进画面）；
-# 段落的 assets 里用 use 明确列出时才上传
-NO_UPLOAD_LABELS = ("俯视平面图",)
+# 段落没写 use 时默认上传这个资产的全部图；但场景同时有俯视平面图和走位图时，只传走位图：
+# 走位图就是在平面图上加画的人物路线，两张都传等于同一张平面传两遍，还多占一个名额
+def default_labels(labels):
+    if "俯视平面图" in labels and "走位图" in labels:
+        return [lab for lab in labels if lab != "俯视平面图"]
+    return list(labels)
 
 # 表情项的粗略检查：近景、中景、特写的镜头正文里，至少要出现脸部的字眼（只写「平静」「克制」不算）
 FACE_WORDS = re.compile(r"[眼眉嘴唇喉颌脸额鼻泪颊腮牙瞳睫眶]|下巴")
@@ -329,7 +332,7 @@ def validate(data, max_seconds, max_images, rep):
                 used_ids.add(aid)
                 labels = asset_labels[aid]
                 if use is None:
-                    n_images += len([lab for lab in labels if lab not in NO_UPLOAD_LABELS])
+                    n_images += len(default_labels(labels))
                 elif (not isinstance(use, list) or not use or not all(isinstance(u, str) for u in use)):
                     rep.error(ip + ".use", "必须是非空的提示词名称列表，如 [\"母版\", \"场景多机位\"]")
                 else:
@@ -461,8 +464,9 @@ def seg_upload(seg, assets):
     people, others = [], []
     for aid, use in seg_items(seg):
         a = assets[aid]
+        keep = default_labels([pr["label"] for pr in a["prompts"]]) if use is None else use
         for p in a["prompts"]:
-            if (use is None and p["label"] not in NO_UPLOAD_LABELS) or (use is not None and p["label"] in use):
+            if p["label"] in keep:
                 (people if a["kind"] == "人物" else others).append((a, p))
     return [(i + 1, a, p) for i, (a, p) in enumerate(people + others)]
 
@@ -490,8 +494,8 @@ def ref_line(n, a, p, n_scenes):
             return ("@图%d 是%s的俯视平面图：只用来理解空间结构和方向；"
                     "图上的线条、箭头和 V1–V4 标注不要出现在画面里。" % (n, where))
         if role == "人物走位":
-            return ("@图%d 是%s的俯视走位示意图：只参考人物的站位和路线；"
-                    "图上的线条、箭头和字母不要出现在画面里。" % (n, where))
+            return ("@图%d 是%s的俯视走位示意图：参考空间结构、人物的站位和路线；"
+                    "图上的线条、箭头、字母和 V1–V4 标注不要出现在画面里。" % (n, where))
         return "@图%d 是%s的%s：参考空间布局。" % (n, where, label)
     if kind == "参考帧":
         if label in STATE_FRAME_LABELS:
