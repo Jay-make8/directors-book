@@ -34,7 +34,10 @@ CHARACTER_SHEET_LABELS = ("人物四视图", "四格图")
 STATE_FRAME_LABELS = ("状态参考",)
 
 # 场景图在【参考素材绑定】里的叫法（「四视图」是旧名，当作「场景多机位」处理）
-SCENE_ROLE = {"母版": "主图", "场景多机位": "多机位", "四视图": "多机位", "走位图": "人物走位"}
+SCENE_ROLE = {"母版": "主图", "场景多机位": "多机位", "四视图": "多机位", "走位图": "人物走位", "俯视平面图": "平面图"}
+# 默认不上传给视频模型的图：俯视平面图只用来生成场景多机位、走位图和写分镜（线条和标注可能漏进画面）；
+# 段落的 assets 里用 use 明确列出时才上传
+NO_UPLOAD_LABELS = ("俯视平面图",)
 
 # 表情项的粗略检查：近景、中景、特写的镜头正文里，至少要出现脸部的字眼（只写「平静」「克制」不算）
 FACE_WORDS = re.compile(r"[眼眉嘴唇喉颌脸额鼻泪颊腮牙瞳睫眶]|下巴")
@@ -89,7 +92,7 @@ def restated_quote(body):
     return None
 
 # 资产阶段的内部术语：视频模型看不懂，不能出现在视频提示词里
-INTERNAL_TERMS = ("主机位", "母版", "场景多机位", "四视图", "走位图")
+INTERNAL_TERMS = ("主机位", "母版", "俯视平面图", "场景多机位", "四视图", "走位图")
 
 # 视频提示词的块名由脚本统一添加；字段里如果又写了块名，自动去掉并给出警告
 BLOCK_FIELDS = (("concept", "整体概念"), ("cinematography", "摄影与影调"), ("sound", "声音"),
@@ -326,7 +329,7 @@ def validate(data, max_seconds, max_images, rep):
                 used_ids.add(aid)
                 labels = asset_labels[aid]
                 if use is None:
-                    n_images += len(labels)
+                    n_images += len([lab for lab in labels if lab not in NO_UPLOAD_LABELS])
                 elif (not isinstance(use, list) or not use or not all(isinstance(u, str) for u in use)):
                     rep.error(ip + ".use", "必须是非空的提示词名称列表，如 [\"母版\", \"场景多机位\"]")
                 else:
@@ -459,7 +462,7 @@ def seg_upload(seg, assets):
     for aid, use in seg_items(seg):
         a = assets[aid]
         for p in a["prompts"]:
-            if use is None or p["label"] in use:
+            if (use is None and p["label"] not in NO_UPLOAD_LABELS) or (use is not None and p["label"] in use):
                 (people if a["kind"] == "人物" else others).append((a, p))
     return [(i + 1, a, p) for i, (a, p) in enumerate(people + others)]
 
@@ -483,6 +486,9 @@ def ref_line(n, a, p, n_scenes):
         if role == "多机位":
             return ("@图%d 是%s的四个角度（V1–V4）：只用来理解空间结构，不是分镜，不要按格子顺序生成镜头；"
                     "图上的 V1–V4 标注不要出现在画面里。" % (n, where))
+        if role == "平面图":
+            return ("@图%d 是%s的俯视平面图：只用来理解空间结构和方向；"
+                    "图上的线条、箭头和 V1–V4 标注不要出现在画面里。" % (n, where))
         if role == "人物走位":
             return ("@图%d 是%s的俯视走位示意图：只参考人物的站位和路线；"
                     "图上的线条、箭头和字母不要出现在画面里。" % (n, where))

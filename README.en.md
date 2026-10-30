@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-5.5.0-2563eb" alt="version 5.5.0">
+  <img src="https://img.shields.io/badge/version-5.6.0-2563eb" alt="version 5.6.0">
   <img src="https://img.shields.io/badge/stages-screenplay%20%7C%20storyboard%20%7C%20assets%20%7C%20video%20prompts-7c3aed" alt="four stages, each usable alone">
   <img src="https://img.shields.io/badge/output-HTML%20director%27s%20book-ef4444" alt="output: HTML director's book">
   <img src="https://img.shields.io/badge/model-Seedance%202.0%20%7C%202.5-0d9488" alt="model: Seedance 2.0 and 2.5">
@@ -17,7 +17,7 @@
 
 <p align="center"><a href="README.md">简体中文</a> · <b>English</b></p>
 
-> **Version 5.5.0.** The 5.x version numbers continue the earlier directors-book line (the old 2.0.1, no longer maintained): same name and a similar structure, but the content was rewritten and is not compatible with the old version. All the skill files are written, and it has been tried in Claude Code, Codex, and WorkBuddy (short drama and film; a few runs were contaminated, see `tests/`). Most of the writing rules have not been compared in controlled experiments; see Known limitations below.
+> **Version 5.6.0.** The 5.x version numbers continue the earlier directors-book line (the old 2.0.1, no longer maintained): same name and a similar structure, but the content was rewritten and is not compatible with the old version. All the skill files are written, and it has been tried in Claude Code, Codex, and WorkBuddy (short drama and film; a few runs were contaminated, see `tests/`). Most of the writing rules have not been compared in controlled experiments; see Known limitations below.
 
 `directors-book` (导演手册, "Director's Book") is an agent skill for Seedance video generation. It helps you turn an idea, step by step, into a screenplay, a storyboard, character and scene asset prompts, and video prompts, and can assemble everything into a single HTML "director's book" with one-click copy buttons.
 
@@ -27,7 +27,7 @@ Four stages, each usable on its own:
 
 1. **Screenplay**: two kinds, short drama or film (it asks which one first).
 2. **Storyboard**: a shot overview table (close to an industry shot list), shot descriptions, splitting into generation clips, and a check for shots that should be merged.
-3. **Asset pack**: character prompts (a four-view sheet: three views plus a face close-up) and scene prompts (master image, multi-camera grid, blocking map).
+3. **Asset pack**: character prompts (a four-view sheet: three views plus a face close-up) and scene prompts (master image, top-down floor plan, multi-camera grid, blocking map).
 4. **Video prompts**: overall concept, reference binding, shots, sound, negative constraints.
 
 There is also one more option, the **director's book**: all four stages together, delivered as one HTML file with a fixed layout (screenplay, storyboard, asset prompts, and video prompts; the video prompts come last, one per segment, all copyable with one click).
