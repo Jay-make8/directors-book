@@ -34,13 +34,18 @@ CHARACTER_SHEET_LABELS = ("人物四视图", "四格图")
 STATE_FRAME_LABELS = ("状态参考",)
 
 # 场景图在【参考素材绑定】里的叫法（「四视图」是旧名，当作「场景多机位」处理）
-SCENE_ROLE = {"母版": "主图", "场景多机位": "多机位", "四视图": "多机位", "走位图": "人物走位", "俯视平面图": "平面图"}
-# 段落没写 use 时默认上传这个资产的全部图；但场景同时有俯视平面图和走位图时，只传走位图：
-# 走位图就是在平面图上加画的人物路线，两张都传等于同一张平面传两遍，还多占一个名额
+# 「俯视平面图」是 5.6 的旧名，当作「俯视图」处理
+SCENE_ROLE = {"母版": "主图", "场景多机位": "多机位", "四视图": "多机位", "走位图": "人物走位",
+              "俯视图": "俯视图", "俯视平面图": "俯视图"}
+# 段落没写 use 时默认上传这个资产的全部图；但场景同时有俯视图和走位图时，只传走位图：
+# 走位图就是在俯视图上叠加的人物路线，两张都传等于同一张平面传两遍，还多占一个名额
 def default_labels(labels):
-    if "俯视平面图" in labels and "走位图" in labels:
-        return [lab for lab in labels if lab != "俯视平面图"]
+    if "走位图" in labels:
+        return [lab for lab in labels if SCENE_ROLE.get(lab) != "俯视图"]
     return list(labels)
+
+# 反向限制的项数上限：官方只确认字幕和音频两类；列多了容易把不想要的东西带进模型注意力，也容易和正文打架
+NEGATIVE_MAX_ITEMS = 12
 
 # 表情项的粗略检查：近景、中景、特写的镜头正文里，至少要出现脸部的字眼（只写「平静」「克制」不算）
 FACE_WORDS = re.compile(r"[眼眉嘴唇喉颌脸额鼻泪颊腮牙瞳睫眶]|下巴")
@@ -95,7 +100,7 @@ def restated_quote(body):
     return None
 
 # 资产阶段的内部术语：视频模型看不懂，不能出现在视频提示词里
-INTERNAL_TERMS = ("主机位", "母版", "俯视平面图", "场景多机位", "四视图", "走位图")
+INTERNAL_TERMS = ("主机位", "母版", "俯视平面图", "俯视图", "场景多机位", "四视图", "走位图")
 
 # 视频提示词的块名由脚本统一添加；字段里如果又写了块名，自动去掉并给出警告
 BLOCK_FIELDS = (("concept", "整体概念"), ("cinematography", "摄影与影调"), ("sound", "声音"),
@@ -238,11 +243,11 @@ def validate(data, max_seconds, max_images, rep):
                     if lab in CHARACTER_SHEET_LABELS and txt is not None and not ("横向排列" in txt and "从左到右" in txt):
                         rep.warn(pp + ".text", "人物四视图的【版式】第一句要写固定的排列句：四格横向排列，从左到右依次为正面全身、"
                                  "90°侧面全身、背面全身、面部近景（见 asset-character.md）")
-                    if SCENE_ROLE.get(lab) == "多机位" and txt is not None:
-                        miss = [w for w in ("左上", "右上", "左下", "右下", "V1", "V2", "V3", "V4") if w not in txt]
+                    if SCENE_ROLE.get(lab) == "多机位" and txt is not None and "格" in txt:
+                        miss = [w for w in ("V1", "不多不少") if w not in txt]
                         if miss:
-                            rep.warn(pp + ".text", "场景多机位要写明格子位置和统一标注：V1 左上、V2 右上、V3 左下、V4 右下"
-                                     "（缺「%s」；见 asset-scene.md 的【标注】）" % "、".join(miss))
+                            rep.warn(pp + ".text", "场景多机位要写明格数（「共 N 格，不多不少」）并用 V1、V2……标注每个机位"
+                                     "（缺「%s」；见 asset-scene.md「场景多机位」）" % "、".join(miss))
                     if "tag" in pr:
                         rep.warn(pp + ".tag", "tag 已不再使用：@图N 由脚本按每个段落的上传顺序生成；已忽略")
             if aid is not None:
@@ -299,6 +304,11 @@ def validate(data, max_seconds, max_images, rep):
                      "（「柜台左端的台灯」），画面方向写在每个镜头的「光线：」段里（见 video-prompt.md【摄影与影调】）")
         if neg is not None and NEGATIVE_LEAD not in neg:
             rep.warn(p + ".negative", "没有以「以下内容一律不要出现」开头")
+        if neg is not None:
+            items = [x for x in re.split(r"[、，,]", neg.split("：", 1)[-1].strip().rstrip("。")) if x.strip()]
+            if len(items) > NEGATIVE_MAX_ITEMS:
+                rep.warn(p + ".negative", "反向限制有 %d 项，超过 %d 项：只留这一段真有的风险和实际出过的问题"
+                         "（见 video-prompt.md【反向限制】）" % (len(items), NEGATIVE_MAX_ITEMS))
         if "cinematography" in seg and not is_text(seg["cinematography"]):
             rep.error(p + ".cinematography", "不需要这个块就删掉字段，写了就不能为空")
 
@@ -479,31 +489,30 @@ def ref_line(n, a, p, n_scenes):
     kind, label, name = a["kind"], p["label"], a["name"]
     if kind == "人物":
         if label in CHARACTER_SHEET_LABELS:
-            return ("@图%d 是%s的外貌参考：四格是同一个人的不同角度，只参考长相、发型和服装，"
-                    "画面里只出现一个%s。" % (n, name, name))
-        return "@图%d 是%s（%s）的外貌参考：只参考长相、发型和服装。" % (n, name, label)
+            return "@图%d 是%s：只参考长相、发型和服装，画面里只有一个%s。" % (n, name, name)
+        return "@图%d 是%s（%s）：只参考长相、发型和服装，画面里只有一个%s。" % (n, name, label, name)
     if kind == "场景":
         where = name if n_scenes > 1 else "这个场景"
         role = SCENE_ROLE.get(label, label)
         if role == "主图":
             return "@图%d 是%s的主图：参考空间布局、材质和光线。" % (n, where)
         if role == "多机位":
-            return ("@图%d 是%s的四个角度（V1–V4）：只用来理解空间结构，不是分镜，不要按格子顺序生成镜头；"
-                    "图上的 V1–V4 标注不要出现在画面里。" % (n, where))
-        if role == "平面图":
-            return ("@图%d 是%s的俯视平面图：只用来理解空间结构和方向；"
-                    "图上的线条、箭头和 V1–V4 标注不要出现在画面里。" % (n, where))
+            return "@图%d 是%s的其他角度：只参考空间，不是分镜；图上的标注不进画面。" % (n, where)
+        if role == "俯视图":
+            return "@图%d 是%s的俯视图：只参考空间布局，不是镜头角度。" % (n, where)
         if role == "人物走位":
-            return ("@图%d 是%s的俯视走位示意图：参考空间结构、人物的站位和路线；"
-                    "图上的线条、箭头、字母和 V1–V4 标注不要出现在画面里。" % (n, where))
+            return ("@图%d 是%s的走位示意图：只参考空间和人物路线；"
+                    "线条、箭头、字母和标注不进画面。" % (n, where))
         return "@图%d 是%s的%s：参考空间布局。" % (n, where, label)
     if kind == "参考帧":
         if label in STATE_FRAME_LABELS:
             # 只写文字带不过去的外观；左右、朝向、手的动作写在镜头正文里（机位可能已经换到人物连线的另一边）
-            return ("@图%d 是上一段视频的最后一帧：只参考人物的服装、发型和身上的状态（湿润、泪痕、污渍）；"
-                    "它不是首帧，不照搬它的构图，人物在画面哪一侧以本段文字为准。" % n)
+            return ("@图%d 是上一段最后一帧：只参考人物的服装、发型和身上的状态（湿润、泪痕、污渍）；"
+                    "不是首帧，不照搬构图，人物左右以本段文字为准。" % n)
         return "@图%d 为首帧：本段从这一帧开始（上一段视频的最后一帧）。" % n
-    return "@图%d 是%s（%s）的参考图。" % (n, name, label)
+    if kind == "道具":
+        return "@图%d 是%s（%s）：只参考外观和材质，画面里只有一个%s。" % (n, name, label, name)
+    return "@图%d 是%s（%s）：只参考外观。" % (n, name, label)
 
 
 def seg_refs(seg, assets):
