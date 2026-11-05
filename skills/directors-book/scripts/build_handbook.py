@@ -6,6 +6,7 @@
     python3 build_handbook.py handbook.json -o out.html     # 指定输出路径
     python3 build_handbook.py handbook.json --md            # 生成同结构的 Markdown
     python3 build_handbook.py handbook.json --check         # 只校验，不生成
+    python3 build_handbook.py 调度.json --layout            # 交付分镜时，只画调度图并核对（见 references/readback.md）
 
 只用 Python 标准库，兼容 Python 3.8 及以上。字段说明见 references/handbook-html.md。
 版式固定：剧本 → 分镜 → 资产提示词 → 视频提示词（第一段、第二段……放在最后），每次生成都一样。
@@ -14,11 +15,23 @@
 import argparse
 import html
 import json
+import math
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "assets" / "handbook-template.html"
+SKILL_MD_PATH = Path(__file__).resolve().parent.parent / "SKILL.md"
+
+
+def skill_version():
+    """从 SKILL.md 的 metadata.version 读版本号，写进手册顶栏，避免以后拿旧版手册当新版用。"""
+    try:
+        m = re.search(r'^\s*version:\s*"?([^"\n]+)"?', SKILL_MD_PATH.read_text(encoding="utf-8"), re.M)
+        return m.group(1).strip() if m else "未知"
+    except OSError:
+        return "未知"
 
 SHOT_TITLE_RE = re.compile(
     r"^镜头\s*(\d+)｜(内景|外景)｜(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*秒｜(.+)$"
@@ -36,20 +49,37 @@ STATE_FRAME_LABELS = ("状态参考",)
 # 场景图在【参考素材绑定】里的叫法（「四视图」是旧名，当作「场景多机位」处理）
 # 「俯视平面图」是 5.6 的旧名，当作「俯视图」处理
 SCENE_ROLE = {"母版": "主图", "场景多机位": "多机位", "四视图": "多机位", "走位图": "人物走位",
-              "俯视图": "俯视图", "俯视平面图": "俯视图"}
+              "俯视图": "俯视图", "俯视平面图": "俯视图", "反打": "反打"}
+# 单张角度图的 label 以「角度图」开头，可以带说明，如「角度图·门口往里看」
+ANGLE_LABEL = "角度图"
+
+
+def scene_role(label):
+    if isinstance(label, str) and label.startswith(ANGLE_LABEL):
+        return "角度"
+    return SCENE_ROLE.get(label, label)
+
+
+# 方向图的朝向（摄影机朝哪个方位拍）：x 往东、y 往北，方位角北 0、东 90
+COMPASS = {"北": 0, "东北": 45, "东": 90, "东南": 135, "南": 180, "西南": 225, "西": 270, "西北": 315}
+DIRECTION_ROLES = ("主图", "反打", "角度")
+FACING_TOLERANCE = 45.0   # 镜头朝向和方向图朝向相差在这个角度内，算有图
+FOV_HALF = 40.0           # 视线左右这个角度以外算画外（平面粗算）
 # 段落没写 use 时默认上传这个资产的全部图；但场景同时有俯视图和走位图时，只传走位图：
 # 走位图就是在俯视图上叠加的人物路线，两张都传等于同一张平面传两遍，还多占一个名额
 def default_labels(labels):
     if "走位图" in labels:
-        return [lab for lab in labels if SCENE_ROLE.get(lab) != "俯视图"]
+        return [lab for lab in labels if scene_role(lab) != "俯视图"]
     return list(labels)
 
 # 反向限制的项数上限：官方只确认字幕和音频两类；列多了容易把不想要的东西带进模型注意力，也容易和正文打架
 NEGATIVE_MAX_ITEMS = 12
 
-# 表情项的粗略检查：近景、中景、特写的镜头正文里，至少要出现脸部的字眼（只写「平静」「克制」不算）
-FACE_WORDS = re.compile(r"[眼眉嘴唇喉颌脸额鼻泪颊腮牙瞳睫眶]|下巴")
-WIDE_SIZES = ("大远景", "远景", "全景")
+# 提示词长度的提醒线（不是下限）：整条（不算参考素材绑定）超过这个字数就警告，先删重复，再在镜头之间拆段
+PROMPT_CHARS_PER_15S = 2000
+# 台词语速：超过这个字/秒，除了争吵、慌乱、抢话，基本说不完
+SPEECH_MAX_RATE = 6.0
+IMG_REF = re.compile(r"@图(\d+)")
 
 # 视频提示词全篇用中文全角标点（音效的半角 <> 是官方写法，不算）
 HALF_WIDTH = re.compile(r'[,;:?!()"]')
@@ -100,7 +130,7 @@ def restated_quote(body):
     return None
 
 # 资产阶段的内部术语：视频模型看不懂，不能出现在视频提示词里
-INTERNAL_TERMS = ("主机位", "母版", "俯视平面图", "俯视图", "场景多机位", "四视图", "走位图")
+INTERNAL_TERMS = ("主机位", "母版", "俯视平面图", "俯视图", "场景多机位", "四视图", "走位图", "角度图")
 
 # 视频提示词的块名由脚本统一添加；字段里如果又写了块名，自动去掉并给出警告
 BLOCK_FIELDS = (("concept", "整体概念"), ("cinematography", "摄影与影调"), ("sound", "声音"),
@@ -243,7 +273,9 @@ def validate(data, max_seconds, max_images, rep):
                     if lab in CHARACTER_SHEET_LABELS and txt is not None and not ("横向排列" in txt and "从左到右" in txt):
                         rep.warn(pp + ".text", "人物四视图的【版式】第一句要写固定的排列句：四格横向排列，从左到右依次为正面全身、"
                                  "90°侧面全身、背面全身、面部近景（见 asset-character.md）")
-                    if SCENE_ROLE.get(lab) == "多机位" and txt is not None and "格" in txt:
+                    if "facing" in pr and pr["facing"] not in COMPASS:
+                        rep.error(pp + ".facing", "朝向只能写 %s 之一" % "、".join(COMPASS))
+                    if scene_role(lab) == "多机位" and txt is not None and "格" in txt:
                         miss = [w for w in ("V1", "不多不少") if w not in txt]
                         if miss:
                             rep.warn(pp + ".text", "场景多机位要写明格数（「共 N 格，不多不少」）并用 V1、V2……标注每个机位"
@@ -320,6 +352,7 @@ def validate(data, max_seconds, max_images, rep):
 
         items = seg.get("assets", [])
         n_images = 0
+        readback_ok = True
         if not isinstance(items, list):
             rep.error(p + ".assets", "必须是列表，如 [\"人物1\", \"场景1\"]；没有就写 []")
         else:
@@ -335,6 +368,7 @@ def validate(data, max_seconds, max_images, rep):
                     continue
                 if aid not in asset_labels:
                     rep.error(ip, "引用了不存在的资产编号「%s」" % aid)
+                    readback_ok = False
                     continue
                 if aid in seen:
                     rep.warn(ip, "资产「%s」在本段重复列出" % aid)
@@ -344,7 +378,7 @@ def validate(data, max_seconds, max_images, rep):
                 if use is None:
                     n_images += len(default_labels(labels))
                 elif (not isinstance(use, list) or not use or not all(isinstance(u, str) for u in use)):
-                    rep.error(ip + ".use", "必须是非空的提示词名称列表，如 [\"母版\", \"场景多机位\"]")
+                    rep.error(ip + ".use", "必须是非空的提示词名称列表，如 [\"母版\", \"反打\", \"俯视图\"]")
                 else:
                     bad = [u for u in use if u not in labels]
                     if bad:
@@ -361,7 +395,10 @@ def validate(data, max_seconds, max_images, rep):
             rep.error(p + ".shots", "缺少，或不是非空列表（每项 {title, body}）")
             continue
         prev_end = 0.0
-        body_chars = 0
+        prompt_chars = sum(len(re.sub(r"\s+", "", seg.get(k) or "")) for k in ("concept", "cinematography", "sound", "negative")
+                           if isinstance(seg.get(k), str))
+        texts_with_refs = [seg.get(k) for k in ("concept", "cinematography", "sound") if is_text(seg.get(k))]
+        texts_with_refs += [r for r in extra if is_text(r)] if isinstance(extra, list) else []
         for j, sh in enumerate(shots):
             sp = "%s.shots[%d]" % (p, j)
             if not isinstance(sh, dict):
@@ -373,7 +410,8 @@ def validate(data, max_seconds, max_images, rep):
             if hit:
                 rep.warn(sp + ".body", "正文里出现了资产阶段的内部术语「%s」，视频模型看不懂：换成画面里的方向和位置（见 video-prompt.md「写法细节」）" % "、".join(hit))
             if body_txt is not None:
-                body_chars += len(re.sub(r"\s+", "", body_txt.split(LIGHT_LEAD)[0]))
+                prompt_chars += len(re.sub(r"\s+", "", body_txt))
+                texts_with_refs.append(body_txt)
             need_text(sh, "camera", sp, rep)
             need_text(sh, "summary", sp, rep)
             lines_txt = need_text(sh, "lines", sp, rep)
@@ -389,11 +427,6 @@ def validate(data, max_seconds, max_images, rep):
                 next_shot_no += 1
                 continue
             no = int(m.group(1))
-            if (body_txt is not None and m.group(5).strip() not in WIDE_SIZES
-                    and not FACE_WORDS.search(body_txt.split(LIGHT_LEAD)[0])):
-                rep.warn(sp + ".body",
-                         "镜头%d 的正文没有写到脸部的可见变化（眼、眉、嘴、喉、下巴……）；只写「平静」「克制」之类的词不算。"
-                         "镜头里没有人脸时可以忽略（见 video-prompt.md 第 3 项）" % no)
             if (is_text(lines_txt) and lines_txt.strip() != "无" and body_txt is not None
                     and "（" not in body_txt):
                 rep.warn(sp + ".body",
@@ -438,20 +471,316 @@ def validate(data, max_seconds, max_images, rep):
             if prev_end is not None and abs(start - prev_end) > 1e-6:
                 rep.warn(sp + ".title", "起始秒数 %g 和上一个镜头的结束 %g 不连续" % (start, prev_end))
             if end <= start:
-                rep.warn(sp + ".title", "结束时间必须晚于起始时间")
+                rep.error(sp + ".title", "结束时间 %g 不晚于起始时间 %g：时间段写反了或写错了" % (end, start))
+            elif body_txt is not None:
+                spoken = sum(len(quote_chars(q)) for q in QUOTE_RE.findall(body_txt))
+                if spoken and spoken / (end - start) > SPEECH_MAX_RATE:
+                    rep.warn(sp + ".body",
+                             "镜头%d 的台词共 %d 字、%g 秒，约 %.1f 字/秒，超过 %g 字/秒：除了争吵、慌乱、抢话，基本说不完。"
+                             "先延长这个镜头，或在台词的自然停顿处拆开；不要删台词，要缩短先问用户（见 storyboard.md「台词与时长」）"
+                             % (no, spoken, end - start, spoken / (end - start), SPEECH_MAX_RATE))
             prev_end = end
         if prev_end is not None and sec_limit is not None and prev_end > sec_limit:
             rep.warn(p + ".shots",
                      "总时长约 %g 秒，超过所选版本的默认上限 %d 秒（用户的平台数字不同时可忽略）" % (prev_end, sec_limit))
-        if prev_end is not None and prev_end > 0 and body_chars / prev_end < 35:
-            rep.warn(p + ".shots",
-                     "镜头正文平均只有 %.0f 字/秒（共 %d 字、%g 秒），偏短（参考约 35–50 字/秒）。逐个镜头检查有没有写出：人物的位置和走位、"
-                     "表情的可见变化、手和道具的动作、环境里在动的东西（见 video-prompt.md「每个镜头写到什么程度」）；"
-                     "镜头确实很简单时可以忽略" % (body_chars / prev_end, body_chars, prev_end))
+        if prev_end is not None and prev_end > 0:
+            limit = max(PROMPT_CHARS_PER_15S, PROMPT_CHARS_PER_15S * prev_end / 15.0 * 0.75)
+            if prompt_chars > limit:
+                rep.warn(p + ".shots",
+                         "整条提示词（不算参考素材绑定）约 %d 字，超过提醒线约 %d 字：先删重复（同一件事说了两遍、参考图里已有的东西、"
+                         "正文写过又在反向限制里反着写），再删和主动作抢注意力的细节；还超就在镜头之间拆段"
+                         "（见 video-prompt.md「每个镜头写到什么程度」）" % (prompt_chars, limit))
+        if n_images:
+            bad_refs = sorted({int(x) for t in texts_with_refs for x in IMG_REF.findall(t) if int(x) > n_images or int(x) == 0})
+            if bad_refs:
+                rep.warn(p, "提示词里写了 %s，但本段只上传 %d 张图：编号要和本段上传顺序一一对应（见 video-prompt.md【参考素材绑定】）"
+                         % ("、".join("@图%d" % x for x in bad_refs), n_images))
+
+        for key in ("blocking", "readback"):
+            if key in seg and not check_layout_schema(seg[key], "%s.%s" % (p, key), rep):
+                readback_ok = False
+        if readback_ok and ("blocking" in seg or "readback" in seg) and isinstance(data.get("assets"), list):
+            for path, msg in readback_findings(seg, assets_by_id(data), p):
+                rep.warn(path, msg)
 
     for aid in asset_labels:
         if aid not in used_ids:
             rep.warn("assets", "资产「%s」没有被任何段落使用" % aid)
+
+
+# ---------------------------------------------------------------- 回读调度图（见 references/readback.md）
+
+
+def _num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _pt(v):
+    return isinstance(v, list) and len(v) == 2 and all(_num(x) for x in v)
+
+
+def check_layout_schema(d, p, rep):
+    """blocking / readback 的格式：坐标都是数字，摄影机有 look。格式不对报错误，不生成。"""
+    ok = True
+    def bad(path, msg):
+        nonlocal ok
+        ok = False
+        rep.error(path, msg)
+    if not isinstance(d, dict):
+        bad(p, "必须是对象，格式见 references/readback.md")
+        return False
+    for k, o in enumerate(d.get("objects", []) or []):
+        if not (isinstance(o, dict) and is_text(o.get("name")) and all(_num(o.get(x)) for x in ("x", "y", "w", "h"))):
+            bad("%s.objects[%d]" % (p, k), "固定物要写 name、x、y、w、h（数字）")
+    shots = d.get("shots")
+    if not isinstance(shots, list) or not shots:
+        bad(p + ".shots", "缺少，或不是非空列表")
+        return False
+    for j, sh in enumerate(shots):
+        sp = "%s.shots[%d]" % (p, j)
+        if not isinstance(sh, dict) or not isinstance(sh.get("shot"), int):
+            bad(sp, "每项要有 shot（全片镜头号，整数）")
+            continue
+        cam = sh.get("camera")
+        if not (isinstance(cam, dict) and _num(cam.get("x")) and _num(cam.get("y")) and _pt(cam.get("look"))):
+            bad(sp + ".camera", "摄影机要写 x、y 和 look:[x, y]（它朝着的点）")
+        for k, pe in enumerate(sh.get("people", []) or []):
+            if not (isinstance(pe, dict) and is_text(pe.get("name")) and _num(pe.get("x")) and _num(pe.get("y"))):
+                bad("%s.people[%d]" % (sp, k), "人物要写 name、x、y")
+        for k, pr in enumerate(sh.get("props", []) or []):
+            if not (isinstance(pr, dict) and is_text(pr.get("name")) and _num(pr.get("x")) and _num(pr.get("y"))
+                    and ("front" not in pr or _pt(pr.get("front")))):
+                bad("%s.props[%d]" % (sp, k), "道具要写 name、x、y，有正反面的写 front:[x, y]")
+    return ok
+
+
+def bearing(dx, dy):
+    return math.degrees(math.atan2(dx, dy)) % 360
+
+
+def angle_gap(a, b):
+    g = abs(a - b) % 360
+    return min(g, 360 - g)
+
+
+def screen_side(cam, x, y):
+    """从摄影机朝 look 看，这个点在画面哪边：左、右、中、画外、背后。"""
+    dx, dy = cam["look"][0] - cam["x"], cam["look"][1] - cam["y"]
+    vx, vy = x - cam["x"], y - cam["y"]
+    cross, dot = dx * vy - dy * vx, dx * vx + dy * vy
+    if dot <= 0:
+        return "背后"
+    ang = math.degrees(math.atan2(cross, dot))
+    if abs(ang) > FOV_HALF:
+        return "画外"
+    if abs(ang) < 4:
+        return "中"
+    return "左" if ang > 0 else "右"
+
+
+def prop_face(cam, pr):
+    """有正反面的道具，摄影机看到的是哪一面。"""
+    fx, fy = pr["front"][0] - pr["x"], pr["front"][1] - pr["y"]
+    cx, cy = cam["x"] - pr["x"], cam["y"] - pr["y"]
+    nf, nc = math.hypot(fx, fy), math.hypot(cx, cy)
+    if nf == 0 or nc == 0:
+        return "侧面"
+    c = (fx * cx + fy * cy) / (nf * nc)
+    return "正面" if c > 0.5 else ("背面" if c < -0.5 else "侧面")
+
+
+def layout_objects(seg):
+    for key in ("readback", "blocking"):
+        objs = (seg.get(key) or {}).get("objects")
+        if objs:
+            return objs
+    return []
+
+
+def shot_facts(sh):
+    cam = sh["camera"]
+    sides = {pe["name"]: screen_side(cam, pe["x"], pe["y"]) for pe in sh.get("people", []) or []}
+    faces = {pr["name"]: prop_face(cam, pr) for pr in sh.get("props", []) or [] if "front" in pr}
+    return sides, faces, bearing(cam["look"][0] - cam["x"], cam["look"][1] - cam["y"])
+
+
+def readback_findings(seg, assets, p):
+    """回读核对：文字自相矛盾、和调度底稿不一致、没写清、缺图。返回 [(路径, 说明)]。"""
+    out = []
+    rb, bk = seg.get("readback"), seg.get("blocking")
+    objs = layout_objects(seg)
+    xs = [o["x"] for o in objs] or [0]
+    ys = [o["y"] for o in objs] or [0]
+    span = max(math.hypot(max(xs) - min(xs), max(ys) - min(ys)), 4.0)
+    plan = {sh["shot"]: sh for sh in (bk or {}).get("shots", [])}
+    if rb:
+        if isinstance(rb.get("rounds"), int) and rb["rounds"] > 3:
+            out.append((p + ".readback.rounds", "回读已经第 %d 轮：三轮还对不上，多半是调度底稿本身走不通，停下来把差异给用户看、问怎么改" % rb["rounds"]))
+        for j, sh in enumerate(rb["shots"]):
+            sp = "%s.readback.shots[%d]" % (p, j)
+            no = sh["shot"]
+            sides, faces, brg = shot_facts(sh)
+            for un in sh.get("unclear", []) or []:
+                out.append((sp, "镜头%d 提示词没写清：%s" % (no, un)))
+            claim = sh.get("screen") or {}
+            for side in ("左", "右"):
+                for name in claim.get(side, []) or []:
+                    got = sides.get(name)
+                    if got is None:
+                        out.append((sp, "镜头%d 文字写%s在画面%s侧，但回读不出%s站在哪" % (no, name, side, name)))
+                    elif got in ("画外", "背后"):
+                        out.append((sp, "镜头%d 文字写%s在画面%s侧，按文字写的机位和站位，%s在%s（自相矛盾）" % (no, name, side, name, got)))
+                    elif got != "中" and got != side:
+                        out.append((sp, "镜头%d 文字写%s在画面%s侧，按文字写的机位和站位，%s在画面%s侧（自相矛盾）" % (no, name, side, name, got)))
+            for name in claim.get("画外", []) or []:
+                if sides.get(name) in ("左", "右", "中"):
+                    out.append((sp, "镜头%d 文字写%s不入画，按文字写的位置他在画面里（要给他一个去处，或换机位）" % (no, name)))
+            for name, face in (sh.get("faces") or {}).items():
+                got = faces.get(name)
+                if got and face in ("正面", "背面") and got != face:
+                    out.append((sp, "镜头%d 文字写%s画面里看到%s，按文字写的机位和朝向看到的是%s（自相矛盾）" % (no, name, face, got)))
+            ref = plan.get(no)
+            if ref is None:
+                continue
+            psides, pfaces, pbrg = shot_facts(ref)
+            if angle_gap(brg, pbrg) > 45:
+                out.append((sp, "镜头%d 回读的摄影机朝向和调度底稿差约 %.0f°" % (no, angle_gap(brg, pbrg))))
+            dist = math.hypot(sh["camera"]["x"] - ref["camera"]["x"], sh["camera"]["y"] - ref["camera"]["y"])
+            if dist > max(1.5, 0.25 * span):
+                out.append((sp, "镜头%d 回读的摄影机位置和调度底稿差约 %.1f 米" % (no, dist)))
+            for name, ps in psides.items():
+                got = sides.get(name)
+                inf = lambda v: v in ("左", "右", "中")
+                if got is None:
+                    if inf(ps):
+                        out.append((sp, "镜头%d 调度底稿里%s在画面里，回读不出他" % (no, name)))
+                elif inf(ps) != inf(got) or (ps in ("左", "右") and got in ("左", "右") and ps != got):
+                    out.append((sp, "镜头%d %s：调度底稿是%s，按提示词回读是%s" % (no, name, ps, got)))
+            for name in sides:
+                if name not in psides and sides[name] in ("左", "右", "中"):
+                    out.append((sp, "镜头%d 回读出调度底稿里没有的人：%s" % (no, name)))
+            for name, pf in pfaces.items():
+                if name in faces and faces[name] != pf:
+                    out.append((sp, "镜头%d %s：调度底稿看到%s，按提示词回读看到%s" % (no, name, pf, faces[name])))
+    # 缺图：镜头朝的方向要有方向图；上传了的方向图要有镜头用到
+    src = rb or bk
+    if src and assets:
+        facings = []
+        for n, a, pr in seg_upload(seg, assets):
+            if a["kind"] == "场景" and scene_role(pr["label"]) in DIRECTION_ROLES and pr.get("facing") in COMPASS:
+                facings.append((pr["label"], a["name"], COMPASS[pr["facing"]]))
+        if facings:
+            brgs = []
+            for sh in src["shots"]:
+                b = shot_facts(sh)[2]
+                brgs.append(b)
+                if not any(angle_gap(b, f) <= FACING_TOLERANCE for _, _, f in facings):
+                    out.append(("%s.assets" % p, "镜头%d 摄影机朝向约 %.0f°（北 0、东 90），本段上传的场景图里没有这个方向：缺图，补一张这个方向的角度图，不要为了省图改机位"
+                                % (sh["shot"], b)))
+            for lab, name, f in facings:
+                if not any(angle_gap(b, f) <= FACING_TOLERANCE for b in brgs):
+                    out.append(("%s.assets" % p, "本段上传了%s的「%s」，但没有镜头朝这个方向拍：不传这张，也不要为了用上它加镜头" % (name, lab)))
+    return out
+
+
+def layout_svg(sh, objs, title):
+    """一个镜头的小平面图：固定物、人物、摄影机和视野、道具正面。北在上。"""
+    pts = [(o["x"] - o["w"] / 2, o["y"] - o["h"] / 2) for o in objs] + [(o["x"] + o["w"] / 2, o["y"] + o["h"] / 2) for o in objs]
+    pts += [(pe["x"], pe["y"]) for pe in sh.get("people", []) or []] + [(sh["camera"]["x"], sh["camera"]["y"])]
+    pts += [(pr["x"], pr["y"]) for pr in sh.get("props", []) or []]
+    x0, x1 = min(x for x, _ in pts) - 1, max(x for x, _ in pts) + 1
+    y0, y1 = min(y for _, y in pts) - 1, max(y for _, y in pts) + 1
+    size, top = 200.0, 18.0
+    k = size / max(x1 - x0, y1 - y0)
+    X = lambda x: (x - x0) * k
+    Y = lambda y: top + (y1 - y) * k
+    h = top + (y1 - y0) * k + 4
+    el = ['<svg class="layout" viewBox="0 0 %.0f %.0f" width="%.0f" height="%.0f" role="img" aria-label="%s">'
+          % (size, h, size, h, esc(title)),
+          '<text x="2" y="12" font-size="11" fill="currentColor">%s</text>' % esc(title),
+          '<text x="%.0f" y="12" font-size="10" fill="currentColor" opacity=".6" text-anchor="end">北↑</text>' % (size - 2)]
+    for o in objs:
+        el.append('<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f" fill="none" stroke="currentColor" stroke-opacity=".45"/>'
+                  % (X(o["x"] - o["w"] / 2), Y(o["y"] + o["h"] / 2), o["w"] * k, o["h"] * k))
+        small = o["w"] * k < 9 * len(o["name"]) + 4 or o["h"] * k < 14
+        ly = Y(o["y"] - o["h"] / 2) + 10 if small else Y(o["y"]) + 3   # 小物件的名字写在矩形下方
+        el.append('<text class="lbl" x="%.1f" y="%.1f" font-size="9" fill="currentColor" opacity=".7" text-anchor="middle">%s</text>'
+                  % (X(o["x"]), ly, esc(o["name"])))
+    cam = sh["camera"]
+    b = math.radians(bearing(cam["look"][0] - cam["x"], cam["look"][1] - cam["y"]))
+    L = max(x1 - x0, y1 - y0) * 0.6
+    for d in (-24, 24):
+        a = b + math.radians(d)
+        el.append('<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke="#c2410c" stroke-dasharray="3 3"/>'
+                  % (X(cam["x"]), Y(cam["y"]), X(cam["x"] + L * math.sin(a)), Y(cam["y"] + L * math.cos(a))))
+    tri = []
+    for d, r in ((0, 0.5), (140, 0.35), (-140, 0.35)):
+        a = b + math.radians(d)
+        tri.append("%.1f,%.1f" % (X(cam["x"] + r * math.sin(a)), Y(cam["y"] + r * math.cos(a))))
+    el.append('<polygon points="%s" fill="#c2410c"/>' % " ".join(tri))
+    for pr in sh.get("props", []) or []:
+        el.append('<rect x="%.1f" y="%.1f" width="5" height="5" fill="#2563eb"/>' % (X(pr["x"]) - 2.5, Y(pr["y"]) - 2.5))
+        if "front" in pr:
+            el.append('<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke="#2563eb"/>'
+                      % (X(pr["x"]), Y(pr["y"]), X(pr["x"]) + (pr["front"][0] - pr["x"]) * k * 0.4,
+                         Y(pr["y"]) - (pr["front"][1] - pr["y"]) * k * 0.4))
+        el.append('<text class="lbl" x="%.1f" y="%.1f" font-size="9" fill="#2563eb">%s</text>' % (X(pr["x"]) + 4, Y(pr["y"]) + 9, esc(pr["name"])))
+    for pe in sh.get("people", []) or []:
+        el.append('<circle cx="%.1f" cy="%.1f" r="4" fill="currentColor"/>' % (X(pe["x"]), Y(pe["y"])))
+        el.append('<text class="lbl" x="%.1f" y="%.1f" font-size="10" font-weight="600" fill="currentColor" text-anchor="end">%s</text>'
+                  % (X(pe["x"]) - 5, Y(pe["y"]) - 4, esc(pe["name"])))
+    el.append("</svg>")
+    return "".join(el)
+
+
+def sides_text(sh):
+    sides, faces, _ = shot_facts(sh)
+    parts = ["%s：%s" % (n, s) for n, s in sides.items()]
+    parts += ["%s看到%s" % (n, f) for n, f in faces.items()]
+    return "；".join(parts) or "画面里没有人"
+
+
+def layout_html(seg, assets, p):
+    rb, bk = seg.get("readback"), seg.get("blocking")
+    if not rb and not bk:
+        return ""
+    objs = layout_objects(seg)
+    out = ['<h4>调度图</h4><div class="hint">每个镜头一个平面图，北在上；红色三角是摄影机，虚线是大致视野；'
+           '蓝色小方块是道具，短线指向它的正面。%s只做平面粗算，不管高低和遮挡（见 references/readback.md）。</div>'
+           % ("上排是调度底稿，下排是只拿提示词文字回读出来的。" if rb and bk else
+              ("这是只拿提示词文字回读出来的。" if rb else "这是调度底稿，还没有按提示词回读。"))]
+    for key, name in (("blocking", "调度底稿"), ("readback", "按提示词回读")):
+        d = seg.get(key)
+        if not d:
+            continue
+        label = name + ("（第 %d 轮）" % d["rounds"] if key == "readback" and isinstance(d.get("rounds"), int) else "")
+        out.append('<div class="layout-row"><div class="layout-label">%s</div>' % esc(label))
+        for sh in d["shots"]:
+            out.append('<figure class="layout-cell">%s<figcaption>%s</figcaption></figure>'
+                       % (layout_svg(sh, objs, "镜头%d" % sh["shot"]), esc(sides_text(sh))))
+        out.append("</div>")
+    found = readback_findings(seg, assets, p)
+    if found:
+        out.append('<div class="hint"><strong>核对没通过</strong>：%s</div>'
+                   % "<br>".join(esc(m) for _, m in found))
+    else:
+        out.append('<div class="hint"><strong>核对通过</strong>：%s</div>'
+                   % ("回读和调度底稿一致，文字没有自相矛盾，镜头朝的方向都有图。" if rb and bk else "没有发现自相矛盾和缺图。"))
+    return "\n".join(out)
+
+
+def layout_md(seg, assets, p):
+    rb, bk = seg.get("readback"), seg.get("blocking")
+    if not rb and not bk:
+        return []
+    out = ["**调度图核对**（Markdown 版不画图，只列算出来的画面左右）", ""]
+    for key, name in (("blocking", "调度底稿"), ("readback", "按提示词回读")):
+        d = seg.get(key)
+        if d:
+            out += ["- %s：%s" % (name, "　".join("镜头%d（%s）" % (sh["shot"], sides_text(sh)) for sh in d["shots"]))]
+    found = readback_findings(seg, assets, p)
+    out += ["- 核对：" + ("；".join(m for _, m in found) if found else "通过"), ""]
+    return out
 
 
 # ---------------------------------------------------------------- 数据整理
@@ -490,10 +819,19 @@ def ref_line(n, a, p, n_scenes):
     if kind == "人物":
         if label in CHARACTER_SHEET_LABELS:
             return "@图%d 是%s：只参考长相、发型和服装，画面里只有一个%s。" % (n, name, name)
+        if "四格" in p.get("text", ""):
+            # 状态版也画成四格时，模型可能当成四个人，绑定行要写明
+            return "@图%d 是%s（%s）：四格是同一个人；只参考长相、发型和服装，画面里只有一个%s。" % (n, name, label, name)
         return "@图%d 是%s（%s）：只参考长相、发型和服装，画面里只有一个%s。" % (n, name, label, name)
     if kind == "场景":
         where = name if n_scenes > 1 else "这个场景"
-        role = SCENE_ROLE.get(label, label)
+        role = scene_role(label)
+        if role == "反打":
+            return "@图%d 是%s的反打方向：参考从这个方向看过去的空间、陈设和光线，不是分镜。" % (n, where)
+        if role == "角度":
+            note = label[len(ANGLE_LABEL):].lstrip("·:：- （(").rstrip("）)")
+            what = "另一个方向（%s）" % note if note else "另一个方向"
+            return "@图%d 是%s的%s：只参考从这个方向看过去的空间，不是分镜。" % (n, where, what)
         if role == "主图":
             return "@图%d 是%s的主图：参考空间布局、材质和光线。" % (n, where)
         if role == "多机位":
@@ -672,7 +1010,9 @@ def build_html(data):
     # 顶栏
     meta = ('<span class="project">%s</span>'
             '<span class="tag">%s</span><span class="tag">画幅 %s</span><span class="tag">%s</span>'
-            % (esc(data["project"]), esc(data["genre"]), esc(data["ratio"]), esc(data["model"])))
+            '<span class="tag">导演手册 skill %s · 生成于 %s</span>'
+            % (esc(data["project"]), esc(data["genre"]), esc(data["ratio"]), esc(data["model"]),
+               esc(skill_version()), date.today().isoformat()))
 
     # 导航：剧本、分镜、资产提示词（各资产）、视频提示词（各段）
     nav = ['<a class="top-item" href="#script">剧本</a>',
@@ -709,6 +1049,9 @@ def build_html(data):
             body.append('<div class="card shot"><div class="shot-title">%s</div>'
                         '<div class="shot-body">%s</div></div>'
                         % (esc(sh["title"].strip()), esc(sh["body"].strip())))
+        lay = layout_html(seg, assets, "segments[%d]" % i)
+        if lay:
+            body.append(lay)
     body.append("</section>")
 
     # 资产提示词：所有资产集中在这一节，每个资产只出现一次
@@ -779,7 +1122,8 @@ def render_md(data):
     assets = assets_by_id(data)
     segs = data["segments"]
     out = ["# %s · 导演手册" % data["project"], "",
-           "体裁：%s ｜ 画幅：%s ｜ 模型：%s" % (data["genre"], data["ratio"], data["model"]), "",
+           "体裁：%s ｜ 画幅：%s ｜ 模型：%s ｜ 导演手册 skill %s · 生成于 %s"
+           % (data["genre"], data["ratio"], data["model"], skill_version(), date.today().isoformat()), "",
            "## 剧本", ""]
     for sec in normalize_script(data["script"]):
         out += ["### " + sec["title"], "", sec["body"].strip(), ""]
@@ -798,6 +1142,7 @@ def render_md(data):
         out.append("")
         for sh in seg["shots"]:
             out += ["**%s**" % sh["title"].strip(), "", sh["body"].strip(), ""]
+        out += layout_md(seg, assets, "segments[%d]" % i)
     out += ["## 资产提示词", ""]
     if data["assets"]:
         out += ["### 资产编号表", "", "| 编号 | 名称 | 类型 | 图 | 用于 |", "|---|---|---|---|---|"]
@@ -833,12 +1178,60 @@ def safe_filename(name):
     return re.sub(r"[\\/:*?\"<>|&'#%$`\s]+", "_", name).strip("_") or "项目"
 
 
+def layout_main(data, args):
+    """只有调度数据时：校验格式，画调度图，列出核对结果。"""
+    rep = Report()
+    segs = data.get("segments") if isinstance(data, dict) else None
+    if not isinstance(segs, list) or not segs:
+        rep.error("segments", "缺少，或不是非空列表")
+    else:
+        for i, seg in enumerate(segs):
+            p = "segments[%d]" % i
+            if not isinstance(seg, dict) or not ("blocking" in seg or "readback" in seg):
+                rep.error(p, "每段要有 blocking 或 readback")
+                continue
+            for key in ("blocking", "readback"):
+                if key in seg:
+                    check_layout_schema(seg[key], "%s.%s" % (p, key), rep)
+    if rep.errors:
+        print("调度数据有 %d 处错误，没有生成文件：" % len(rep.errors), file=sys.stderr)
+        for e in rep.errors:
+            print("  - " + e, file=sys.stderr)
+        return 1
+    found = 0
+    body = ['<section class="part" id="layout"><h2>调度图</h2>']
+    for i, seg in enumerate(segs):
+        f = readback_findings(seg, {}, "segments[%d]" % i)
+        found += len(f)
+        for path, msg in f:
+            print("核对  %s：%s" % (path, msg), file=sys.stderr)
+        body.append("<h3>%s</h3>" % esc(seg.get("title") or seg_name(i + 1)))
+        body.append(layout_html(seg, {}, "segments[%d]" % i))
+    body.append("</section>")
+    if args.check:
+        print("格式没问题；核对发现 %d 处要处理" % found)
+        return 0
+    project = data.get("project") or "项目"
+    tpl = TEMPLATE_PATH.read_text(encoding="utf-8")
+    meta = ('<span class="project">%s</span><span class="tag">调度图（分镜阶段）</span>'
+            '<span class="tag">导演手册 skill %s · 生成于 %s</span>' % (esc(project), esc(skill_version()), date.today().isoformat()))
+    out = (tpl.replace("<!--@TITLE-->", esc(project) + " · 调度图").replace("<!--@META-->", meta)
+              .replace("<!--@NAV-->", '<a class="top-item" href="#layout">调度图</a>').replace("<!--@BODY-->", "\n".join(body)))
+    out_path = Path(args.output) if args.output else Path("%s_调度图.html" % safe_filename(project))
+    out_path.write_text(out, encoding="utf-8")
+    print("已生成：%s（核对发现 %d 处要处理；只检查文字和坐标，不代表出片一定对）" % (out_path.resolve(), found))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="把 handbook.json 生成为导演手册 HTML（或 Markdown）。")
     ap.add_argument("input", help="handbook.json 的路径")
     ap.add_argument("-o", "--output", help="输出路径；默认是当前目录下的 项目名_导演手册.html")
     ap.add_argument("--md", action="store_true", help="生成同结构的 Markdown，不生成 HTML")
     ap.add_argument("--check", action="store_true", help="只校验，不生成文件")
+    ap.add_argument("--layout", action="store_true",
+                    help="输入只有调度数据（{\"project\":…, \"segments\":[{\"title\":…, \"blocking\":…, \"readback\":…}]}），"
+                         "只画调度图并核对，用在交付分镜时（见 references/readback.md）")
     ap.add_argument("--max-seconds", type=float, help="单个段落的时长上限（用户平台的数字）；默认按模型名取 2.0→15、2.5→30")
     ap.add_argument("--max-images", type=int, help="单个段落的参考图上限（用户平台的数字）；默认按模型名取 2.0→9、2.5→30")
     args = ap.parse_args(argv)
@@ -855,6 +1248,9 @@ def main(argv=None):
         print("常见原因：字符串里的换行要写成 \\n，英文双引号要写成 \\\"，最后一项后面不能有逗号。", file=sys.stderr)
         return 2
 
+    if args.layout:
+        return layout_main(data, args)
+
     rep = Report()
     validate(data, args.max_seconds, args.max_images, rep)
     for w in rep.warnings:
@@ -867,14 +1263,15 @@ def main(argv=None):
         return 1
 
     if args.check:
-        print("校验通过（%d 个警告）" % len(rep.warnings))
+        print("结构校验通过（%d 个警告）。只检查了字段、格式和几项常见写法；站位、道具朝向、取景、关键动作能不能看懂，要人工核对。"
+              % len(rep.warnings))
         return 0
 
     ext = ".md" if args.md else ".html"
     out_path = Path(args.output) if args.output else Path("%s_导演手册%s" % (safe_filename(data["project"]), ext))
     content = render_md(data) if args.md else render_html(data)
     out_path.write_text(content, encoding="utf-8")
-    print("已生成：%s" % out_path.resolve())
+    print("已生成：%s（结构校验通过，%d 个警告；画面调度要人工核对）" % (out_path.resolve(), len(rep.warnings)))
     return 0
 
 

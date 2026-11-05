@@ -27,7 +27,7 @@ Four stages, each usable on its own:
 
 1. **Screenplay**: two kinds, short drama or film (it asks which one first).
 2. **Storyboard**: a shot overview table (close to an industry shot list), shot descriptions, splitting into generation clips, and a check for shots that should be merged.
-3. **Asset pack**: character prompts (a four-view sheet: three views plus a face close-up) and scene prompts (master image, top-down view, extra camera angles as needed, blocking map).
+3. **Asset pack**: character prompts (a four-view sheet: three views plus a face close-up) and scene prompts (master image, reverse angle, top-down view, extra single-angle images as shots require, blocking map).
 4. **Video prompts**: overall concept, reference binding, shots, sound, negative constraints.
 
 There is also one more option, the **director's book**: all four stages together, delivered as one HTML file with a fixed layout (screenplay, storyboard, asset prompts, and video prompts; the video prompts come last, one per segment, all copyable with one click).
