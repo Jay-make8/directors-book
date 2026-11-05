@@ -82,7 +82,8 @@ def default_labels(labels):
 # 反向限制的项数上限：官方只确认字幕和音频两类；列多了容易把不想要的东西带进模型注意力，也容易和正文打架
 NEGATIVE_MAX_ITEMS = 12
 
-# 提示词长度的提醒线（不是下限）：整条（不算参考素材绑定）超过这个字数就警告，先删重复，再在镜头之间拆段
+# 提示词长度的提醒线（不是下限）：不算参考素材绑定、【摄影与影调】和每镜的「光线：」段（影视必写，两个体裁按同一把尺子量分镜），
+# 超过这个字数就警告：先删重复，还超就在镜头之间拆段；不能为了压字数删关键动作、台词、站位机位和光线段
 PROMPT_CHARS_PER_15S = 2000
 # 台词语速：超过这个字/秒，除了争吵、慌乱、抢话，基本说不完
 SPEECH_MAX_RATE = 6.0
@@ -402,7 +403,7 @@ def validate(data, max_seconds, max_images, rep):
             rep.error(p + ".shots", "缺少，或不是非空列表（每项 {title, body}）")
             continue
         prev_end = 0.0
-        prompt_chars = sum(len(re.sub(r"\s+", "", seg.get(k) or "")) for k in ("concept", "cinematography", "sound", "negative")
+        prompt_chars = sum(len(re.sub(r"\s+", "", seg.get(k) or "")) for k in ("concept", "sound", "negative")
                            if isinstance(seg.get(k), str))
         texts_with_refs = [seg.get(k) for k in ("concept", "cinematography", "sound") if is_text(seg.get(k))]
         texts_with_refs += [r for r in extra if is_text(r)] if isinstance(extra, list) else []
@@ -417,7 +418,7 @@ def validate(data, max_seconds, max_images, rep):
             if hit:
                 rep.warn(sp + ".body", "正文里出现了资产阶段的内部术语「%s」，视频模型看不懂：换成画面里的方向和位置（见 video-prompt.md「写法细节」）" % "、".join(hit))
             if body_txt is not None:
-                prompt_chars += len(re.sub(r"\s+", "", body_txt))
+                prompt_chars += len(re.sub(r"\s+", "", body_txt.split(LIGHT_LEAD)[0]))
                 texts_with_refs.append(body_txt)
             need_text(sh, "camera", sp, rep)
             need_text(sh, "summary", sp, rep)
@@ -494,9 +495,9 @@ def validate(data, max_seconds, max_images, rep):
             limit = max(PROMPT_CHARS_PER_15S, PROMPT_CHARS_PER_15S * prev_end / 15.0 * 0.75)
             if prompt_chars > limit:
                 rep.warn(p + ".shots",
-                         "整条提示词（不算参考素材绑定）约 %d 字，超过提醒线约 %d 字：先删重复（同一件事说了两遍、参考图里已有的东西、"
-                         "正文写过又在反向限制里反着写），再删和主动作抢注意力的细节；还超就在镜头之间拆段"
-                         "（见 video-prompt.md「每个镜头写到什么程度」）" % (prompt_chars, limit))
+                         "提示词约 %d 字（不算参考素材绑定、【摄影与影调】和「光线：」段），超过提醒线约 %d 字：先删重复（同一件事说了两遍、"
+                         "参考图里已有的东西、正文写过又在反向限制里反着写），还超就在镜头之间拆段。不要为了压字数删关键动作、台词、"
+                         "站位机位和光线段（见 video-prompt.md「每个镜头写到什么程度」）" % (prompt_chars, limit))
         if n_images:
             bad_refs = sorted({int(x) for t in texts_with_refs for x in IMG_REF.findall(t) if int(x) > n_images or int(x) == 0})
             if bad_refs:
