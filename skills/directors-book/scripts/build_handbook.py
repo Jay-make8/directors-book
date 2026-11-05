@@ -65,6 +65,13 @@ COMPASS = {"北": 0, "东北": 45, "东": 90, "东南": 135, "南": 180, "西南
 DIRECTION_ROLES = ("主图", "反打", "角度")
 FACING_TOLERANCE = 45.0   # 镜头朝向和方向图朝向相差在这个角度内，算有图
 FOV_HALF = 40.0           # 视线左右这个角度以外算画外（平面粗算）
+# 调度图的固定规格（references/readback.md「调度图的规格」）：每个镜头一格，宽 200 像素，北在上，
+# 东西、南北同一个比例，四周各留 1 米，左下角画比例尺；改这些数要同步改文档
+LAYOUT_WIDTH = 200.0
+LAYOUT_TITLE_H = 18.0
+LAYOUT_PAD_M = 1.0
+LAYOUT_SCALEBAR_H = 16.0
+LAYOUT_FOV_DRAW = 24.0    # 画出来的视野线（约 40mm 焦距感的水平半角）
 # 段落没写 use 时默认上传这个资产的全部图；但场景同时有俯视图和走位图时，只传走位图：
 # 走位图就是在俯视图上叠加的人物路线，两张都传等于同一张平面传两遍，还多占一个名额
 def default_labels(labels):
@@ -688,13 +695,13 @@ def layout_svg(sh, objs, title):
     pts = [(o["x"] - o["w"] / 2, o["y"] - o["h"] / 2) for o in objs] + [(o["x"] + o["w"] / 2, o["y"] + o["h"] / 2) for o in objs]
     pts += [(pe["x"], pe["y"]) for pe in sh.get("people", []) or []] + [(sh["camera"]["x"], sh["camera"]["y"])]
     pts += [(pr["x"], pr["y"]) for pr in sh.get("props", []) or []]
-    x0, x1 = min(x for x, _ in pts) - 1, max(x for x, _ in pts) + 1
-    y0, y1 = min(y for _, y in pts) - 1, max(y for _, y in pts) + 1
-    size, top = 200.0, 18.0
+    x0, x1 = min(x for x, _ in pts) - LAYOUT_PAD_M, max(x for x, _ in pts) + LAYOUT_PAD_M
+    y0, y1 = min(y for _, y in pts) - LAYOUT_PAD_M, max(y for _, y in pts) + LAYOUT_PAD_M
+    size, top = LAYOUT_WIDTH, LAYOUT_TITLE_H
     k = size / max(x1 - x0, y1 - y0)
     X = lambda x: (x - x0) * k
     Y = lambda y: top + (y1 - y) * k
-    h = top + (y1 - y0) * k + 4
+    h = top + (y1 - y0) * k + LAYOUT_SCALEBAR_H
     el = ['<svg class="layout" viewBox="0 0 %.0f %.0f" width="%.0f" height="%.0f" role="img" aria-label="%s">'
           % (size, h, size, h, esc(title)),
           '<text x="2" y="12" font-size="11" fill="currentColor">%s</text>' % esc(title),
@@ -709,7 +716,7 @@ def layout_svg(sh, objs, title):
     cam = sh["camera"]
     b = math.radians(bearing(cam["look"][0] - cam["x"], cam["look"][1] - cam["y"]))
     L = max(x1 - x0, y1 - y0) * 0.6
-    for d in (-24, 24):
+    for d in (-LAYOUT_FOV_DRAW, LAYOUT_FOV_DRAW):
         a = b + math.radians(d)
         el.append('<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke="#c2410c" stroke-dasharray="3 3"/>'
                   % (X(cam["x"]), Y(cam["y"]), X(cam["x"] + L * math.sin(a)), Y(cam["y"] + L * math.cos(a))))
@@ -729,6 +736,11 @@ def layout_svg(sh, objs, title):
         el.append('<circle cx="%.1f" cy="%.1f" r="4" fill="currentColor"/>' % (X(pe["x"]), Y(pe["y"])))
         el.append('<text class="lbl" x="%.1f" y="%.1f" font-size="10" font-weight="600" fill="currentColor" text-anchor="end">%s</text>'
                   % (X(pe["x"]) - 5, Y(pe["y"]) - 4, esc(pe["name"])))
+    # 比例尺：取 1、2、5、10 米里画出来最接近画布四分之一宽的那个
+    bar = min((1, 2, 5, 10, 20), key=lambda m: abs(m * k - size / 4))
+    by = h - 5
+    el.append('<line x1="4" y1="%.1f" x2="%.1f" y2="%.1f" stroke="currentColor" stroke-width="2"/>' % (by, 4 + bar * k, by))
+    el.append('<text x="%.1f" y="%.1f" font-size="9" fill="currentColor" opacity=".7">%d 米</text>' % (8 + bar * k, by + 3, bar))
     el.append("</svg>")
     return "".join(el)
 
